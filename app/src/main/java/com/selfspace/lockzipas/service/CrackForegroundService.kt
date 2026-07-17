@@ -1,5 +1,6 @@
 package com.selfspace.lockzipas.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.selfspace.lockzipas.R
@@ -48,6 +50,7 @@ class CrackForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var requestStore: CrackRequestStore
     private lateinit var notificationManager: NotificationManager
+    private var wakeLock: PowerManager.WakeLock? = null
     private var crackJob: Job? = null
     @Volatile private var paused = false
     @Volatile private var canceled = false
@@ -69,16 +72,19 @@ class CrackForegroundService : Service() {
             }
             ACTION_PAUSE -> {
                 paused = true
+                releaseWakeLock()
                 updateSession(currentSession().copy(state = CrackState.Paused, message = "已暂停"))
             }
             ACTION_RESUME -> {
                 paused = false
+                acquireWakeLock()
                 updateSession(currentSession().copy(state = CrackState.Running, message = "继续尝试密码"))
             }
             ACTION_CANCEL -> {
                 canceled = true
                 crackJob?.cancel(CancellationException("Canceled by user"))
                 requestStore.clearCheckpoint()
+                releaseWakeLock()
                 updateSession(currentSession().copy(state = CrackState.Canceled, message = "已取消"))
                 stopSelf()
             }
@@ -94,11 +100,14 @@ class CrackForegroundService : Service() {
     override fun onDestroy() {
         crackJob?.cancel()
         scope.cancel()
+        releaseWakeLock()
         super.onDestroy()
     }
 
     private fun startRun(config: CrackConfig) {
         crackJob?.cancel()
+        releaseWakeLock()
+        acquireWakeLock()
         paused = false
         canceled = false
 
@@ -123,6 +132,7 @@ class CrackForegroundService : Service() {
                         message = error.message ?: "任务失败"
                     )
                 )
+                releaseWakeLock()
                 stopSelf()
             }
         }
@@ -221,6 +231,7 @@ class CrackForegroundService : Service() {
         }
 
         requestStore.clearCheckpoint()
+        releaseWakeLock()
         updateSession(
             currentSession().copy(
                 state = CrackState.Failed,
@@ -230,6 +241,28 @@ class CrackForegroundService : Service() {
             )
         )
         stopSelf()
+    }
+
+    @SuppressLint("WakelockTimeout")
+    private fun acquireWakeLock() {
+        val currentWakeLock = wakeLock
+        if (currentWakeLock?.isHeld == true) return
+
+        wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:CrackWakeLock")
+            .apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { lock ->
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+        wakeLock = null
     }
 
     private suspend fun crackDictionaryParallel(
@@ -398,6 +431,7 @@ class CrackForegroundService : Service() {
         }
 
         requestStore.clearCheckpoint()
+        releaseWakeLock()
         updateSession(
             currentSession().copy(
                 state = CrackState.Success,
