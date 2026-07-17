@@ -1,0 +1,3 @@
+-keep class net.sf.sevenzipjbinding.** { *; }
+-keep class com.sorrowblue.sevenzipjbinding.** { *; }
+-keep class org.slf4j.** { *; }
